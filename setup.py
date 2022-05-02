@@ -2,7 +2,7 @@ from setuptools import setup
 
 dependencies = [
     "aiofiles==0.7.0",  # Async IO for files
-    "blspy==1.0.11",  # Signature library
+    "blspy==1.0.9",  # Signature library
     "chiavdf==1.0.6",  # timelord and vdf verification
     "chiabip158==1.1",  # bip158-style wallet filters
     "chiapos==1.0.10",  # proof of space
@@ -27,7 +27,7 @@ dependencies = [
     "setproctitle==1.2.3",  # Gives the chia processes readable names
     "sortedcontainers==2.4.0",  # For maintaining sorted mempools
     # TODO: when moving to click 8 remove the pinning of black noted below
-    "click==7.1.2",  # For the CLI
+    "click==8.1.3",  # For the CLI
     "dnspythonchia==2.2.0",  # Query DNS seeds
     "watchdog==2.1.7",  # Filesystem event watching - watches keyring.yaml
     "dnslib==0.9.17",  # dns lib
