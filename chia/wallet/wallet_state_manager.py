@@ -7,17 +7,18 @@ import time
 from collections import defaultdict
 from pathlib import Path
 from secrets import token_bytes
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Iterator, cast
+from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Tuple
 
 import aiosqlite
 from blspy import G1Element, PrivateKey
 
-from chia.consensus.coinbase import pool_parent_id, farmer_parent_id
+from chia.consensus.coinbase import farmer_parent_id, pool_parent_id
 from chia.consensus.constants import ConsensusConstants
 from chia.pools.pool_puzzles import SINGLETON_LAUNCHER_HASH, solution_to_pool_state
 from chia.pools.pool_wallet import PoolWallet
 from chia.protocols import wallet_protocol
-from chia.protocols.wallet_protocol import PuzzleSolutionResponse, RespondPuzzleSolution, CoinState
+from chia.protocols.wallet_protocol import CoinState, PuzzleSolutionResponse, RespondPuzzleSolution
+from chia.server.server import ChiaServer
 from chia.server.ws_connection import WSChiaConnection
 from chia.types.blockchain_format.coin import Coin
 from chia.types.blockchain_format.program import Program
@@ -27,19 +28,20 @@ from chia.types.full_block import FullBlock
 from chia.types.mempool_inclusion_status import MempoolInclusionStatus
 from chia.util.byte_types import hexstr_to_bytes
 from chia.util.config import process_config_start_method
+from chia.util.db_synchronous import db_synchronous_on
 from chia.util.db_wrapper import DBWrapper
 from chia.util.errors import Err
-from chia.util.ints import uint32, uint64, uint128, uint8
-from chia.util.db_synchronous import db_synchronous_on
-from chia.wallet.cat_wallet.cat_utils import match_cat_puzzle, construct_cat_puzzle
-from chia.wallet.nft_wallet.nft_puzzles import match_nft_puzzle
-from chia.wallet.did_wallet.did_wallet_puzzles import match_did_puzzle, create_fullpuz, DID_INNERPUZ_MOD
-from chia.wallet.nft_wallet.nft_wallet import NFTWalletInfo
-from chia.wallet.cat_wallet.cat_wallet import CATWallet
+from chia.util.ints import uint8, uint32, uint64, uint128
 from chia.wallet.cat_wallet.cat_constants import DEFAULT_CATS
+from chia.wallet.cat_wallet.cat_utils import construct_cat_puzzle, match_cat_puzzle
+from chia.wallet.cat_wallet.cat_wallet import CATWallet
 from chia.wallet.derivation_record import DerivationRecord
 from chia.wallet.derive_keys import master_sk_to_wallet_sk, master_sk_to_wallet_sk_unhardened
+from chia.wallet.did_wallet.did_wallet import DIDWallet
+from chia.wallet.did_wallet.did_wallet_puzzles import DID_INNERPUZ_MOD, create_fullpuz, match_did_puzzle
 from chia.wallet.key_val_store import KeyValStore
+from chia.wallet.nft_wallet.nft_puzzles import match_nft_puzzle
+from chia.wallet.nft_wallet.nft_wallet import NFTWallet, NFTWalletInfo
 from chia.wallet.outer_puzzles import AssetType
 from chia.wallet.puzzle_drivers import PuzzleInfo
 from chia.wallet.puzzles.cat_loader import CAT_MOD
@@ -64,9 +66,6 @@ from chia.wallet.wallet_puzzle_store import WalletPuzzleStore
 from chia.wallet.wallet_sync_store import WalletSyncStore
 from chia.wallet.wallet_transaction_store import WalletTransactionStore
 from chia.wallet.wallet_user_store import WalletUserStore
-from chia.server.server import ChiaServer
-from chia.wallet.did_wallet.did_wallet import DIDWallet
-from chia.wallet.nft_wallet.nft_wallet import NFTWallet
 from chia.wallet.wallet_weight_proof_handler import WalletWeightProofHandler
 
 
@@ -224,16 +223,6 @@ class WalletStateManager:
 
         return self
 
-    def get_derivation_index(self, pubkey: G1Element, max_depth: int = 1000) -> int:
-        for i in range(0, max_depth):
-            derived = self.get_public_key(uint32(i))
-            if derived == pubkey:
-                return i
-            derived = self.get_public_key_unhardened(uint32(i))
-            if derived == pubkey:
-                return i
-        return -1
-
     def get_public_key(self, index: uint32) -> G1Element:
         return master_sk_to_wallet_sk(self.private_key, index).get_g1()
 
@@ -258,11 +247,12 @@ class WalletStateManager:
         that we can restore the wallet from only the private keys.
         """
         targets = list(self.wallets.keys())
-
+        self.log.debug("Target wallets to generate puzzle hashes for: %s", repr(targets))
         unused: Optional[uint32] = await self.puzzle_store.get_unused_derivation_path()
         if unused is None:
             # This handles the case where the database has entries but they have all been used
             unused = await self.puzzle_store.get_last_derivation_path()
+            self.log.debug("Tried finding unused: %s", unused)
             if unused is None:
                 # This handles the case where the database is empty
                 unused = uint32(0)
@@ -377,11 +367,13 @@ class WalletStateManager:
             # If we have no unused public keys, we will create new ones
             unused: Optional[uint32] = await self.puzzle_store.get_unused_derivation_path()
             if unused is None:
+                self.log.debug("No unused paths, generate more ")
                 await self.create_more_puzzle_hashes()
+                # Now we must have unused public keys
+                unused = await self.puzzle_store.get_unused_derivation_path()
+                assert unused is not None
 
-            # Now we must have unused public keys
-            unused = await self.puzzle_store.get_unused_derivation_path()
-            assert unused is not None
+            self.log.debug("Fetching derivation record for: %s %s %s", unused, wallet_id, hardened)
             record: Optional[DerivationRecord] = await self.puzzle_store.get_derivation_record(
                 unused, wallet_id, hardened
             )
@@ -577,9 +569,10 @@ class WalletStateManager:
         # Check if the coin is a NFT
         #                                                        hint
         # First spend where 1 mojo coin -> Singleton launcher -> NFT -> NFT
-        nft_matched, nft_curried_args = match_nft_puzzle(Program.from_bytes(bytes(coin_spend.puzzle_reveal)))
+        nft_matched, _, nft_curried_args = match_nft_puzzle(Program.from_bytes(bytes(coin_spend.puzzle_reveal)))
+        self.log.debug("Matching NFT: %s", nft_matched)
         if nft_matched:
-            return await self.handle_nft(coin_spend, nft_curried_args)
+            return await self.handle_nft(coin_spend, iter(nft_curried_args))
 
         # Check if the coin is a DID
         did_matched, did_curried_args = match_did_puzzle(Program.from_bytes(bytes(coin_spend.puzzle_reveal)))
@@ -680,12 +673,20 @@ class WalletStateManager:
             launch_id: bytes32 = bytes32(bytes(singleton_struct.rest().first())[1:])
             self.log.info(f"Found DID, launch_id {launch_id}.")
             did_puzzle = DID_INNERPUZ_MOD.curry(
-                our_inner_puzzle, Program.to([]).get_tree_hash(), uint64(0), singleton_struct, metadata
+                our_inner_puzzle, recovery_list_hash, num_verification, singleton_struct, metadata
             )
             full_puzzle = create_fullpuz(did_puzzle, launch_id)
+            did_puzzle_empty_recovery = DID_INNERPUZ_MOD.curry(
+                our_inner_puzzle, Program.to([]).get_tree_hash(), uint64(0), singleton_struct, metadata
+            )
+            full_puzzle_empty_recovery = create_fullpuz(did_puzzle_empty_recovery, launch_id)
             if full_puzzle.get_tree_hash() != coin_state.coin.puzzle_hash:
-                self.log.error("DID puzzle hash doesn't match, please check curried parameters.")
-                return None, None
+                if full_puzzle_empty_recovery.get_tree_hash() == coin_state.coin.puzzle_hash:
+                    did_puzzle = did_puzzle_empty_recovery
+                    self.log.info("DID recovery list was reset by the previous owner.")
+                else:
+                    self.log.error("DID puzzle hash doesn't match, please check curried parameters.")
+                    return None, None
             # Create DID wallet
             response: List[CoinState] = await self.wallet_node.get_coin_state([launch_id])
             if len(response) == 0:
@@ -701,34 +702,29 @@ class WalletStateManager:
         return wallet_id, wallet_type
 
     async def handle_nft(
-        self,
-        coin_spend: CoinSpend,
-        curried_args: Iterator[Program],
+        self, coin_spend: CoinSpend, curried_args: Iterator[Program]
     ) -> Tuple[Optional[uint32], Optional[WalletType]]:
         """
         Handle the new coin when it is a NFT
         :param coin_spend: New coin spend
-        :param curried_args: Curried arg of the NFT mod
         :return: Wallet ID & Wallet Type
         """
         wallet_id = None
         wallet_type = None
-        (
-            NFT_MOD_HASH,
-            singleton_struct,
-            current_owner_did,
-            nft_transfer_program_hash,
-            transfer_program_curry_params,
-            metadata,
-        ) = curried_args
-        hint_list = cast(List[bytes32], compute_coin_hints(coin_spend))
+
+        (_, metadata, metadata_updater_puzzle_hash, inner_puzzle) = curried_args
+        self.log.debug("Handling NFT: %s", coin_spend)
         for wallet_info in await self.get_all_wallet_info_entries():
             if wallet_info.type == WalletType.NFT:
                 nft_wallet_info = NFTWalletInfo.from_json_dict(json.loads(wallet_info.data))
-                for hint in hint_list:
-                    if nft_wallet_info.my_did == hint:
-                        wallet_id = wallet_info.id
-                        wallet_type = WalletType.NFT
+                self.log.debug(
+                    "Checking NFT wallet %r and inner puzzle %s", wallet_info.name, inner_puzzle.get_tree_hash()
+                )
+                if not nft_wallet_info.did_wallet_id:
+                    # standard NFT wallet
+                    wallet_id = wallet_info.id
+                    wallet_type = WalletType.NFT
+                    break
         return wallet_id, wallet_type
 
     async def new_coin_state(
@@ -1078,7 +1074,9 @@ class WalletStateManager:
         if existing is not None:
             return None
 
-        self.log.info(f"Adding coin: {coin} at {height} wallet_id:{wallet_id}")
+        self.log.info(
+            f"Adding record to state manager coin: {coin} at {height} wallet_id:{wallet_id} and type: {wallet_type}"
+        )
         farmer_reward = False
         pool_reward = False
         if self.is_farmer_reward(height, coin.parent_coin_info):
@@ -1232,7 +1230,7 @@ class WalletStateManager:
         wallet = self.wallets[wallet_id]
         return wallet
 
-    async def reorg_rollback(self, height: int):
+    async def reorg_rollback(self, height: int) -> List[uint32]:
         """
         Rolls back and updates the coin_store and transaction store. It's possible this height
         is the tip, or even beyond the tip.
@@ -1258,7 +1256,8 @@ class WalletStateManager:
                     remove_ids.append(wallet_id)
         for wallet_id in remove_ids:
             await self.user_store.delete_wallet(wallet_id, in_transaction=True)
-            self.wallets.pop(wallet_id)
+
+        return remove_ids
 
     async def _await_closed(self) -> None:
         await self.db_connection.close()

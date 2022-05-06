@@ -58,8 +58,8 @@ class WalletRpcClient(RpcClient):
     async def delete_key(self, fingerprint: int) -> None:
         return await self.fetch("delete_key", {"fingerprint": fingerprint})
 
-    async def check_delete_key(self, fingerprint: int) -> None:
-        return await self.fetch("check_delete_key", {"fingerprint": fingerprint})
+    async def check_delete_key(self, fingerprint: int, max_ph_to_search: int = 100) -> None:
+        return await self.fetch("check_delete_key", {"fingerprint": fingerprint, "max_ph_to_search": max_ph_to_search})
 
     async def delete_all_keys(self) -> None:
         return await self.fetch("delete_all_keys", {})
@@ -236,13 +236,14 @@ class WalletRpcClient(RpcClient):
         return [Coin.from_json_dict(coin) for coin in response["coins"]]
 
     # DID wallet
-    async def create_new_did_wallet(self, amount, name="DID Wallet", backup_ids=[], required_num=0) -> Dict:
+    async def create_new_did_wallet(self, amount, fee=0, name="DID Wallet", backup_ids=[], required_num=0) -> Dict:
         request: Dict[str, Any] = {
             "wallet_type": "did_wallet",
             "did_type": "new",
             "backup_dids": backup_ids,
             "num_of_backup_ids_needed": required_num,
             "amount": amount,
+            "fee": fee,
             "wallet_name": name,
         }
         response = await self.fetch("create_new_wallet", request)
@@ -322,9 +323,24 @@ class WalletRpcClient(RpcClient):
         response = await self.fetch("did_recovery_spend", request)
         return response
 
-    async def did_transfer_did(self, wallet_id, address, fee) -> Dict:
-        request: Dict[str, Any] = {"wallet_id": wallet_id, "inner_address": address, "fee": fee}
+    async def did_transfer_did(self, wallet_id, address, fee, with_recovery) -> Dict:
+        request: Dict[str, Any] = {
+            "wallet_id": wallet_id,
+            "inner_address": address,
+            "fee": fee,
+            "with_recovery_info": with_recovery,
+        }
         response = await self.fetch("did_transfer_did", request)
+        return response
+
+    async def did_set_wallet_name(self, wallet_id, name) -> Dict:
+        request = {"wallet_id": wallet_id, "name": name}
+        response = await self.fetch("did_set_wallet_name", request)
+        return response
+
+    async def did_get_wallet_name(self, wallet_id) -> Dict:
+        request = {"wallet_id": wallet_id}
+        response = await self.fetch("did_get_wallet_name", request)
         return response
 
     # TODO: test all invocations of create_new_pool_wallet with new fee arg.
@@ -544,3 +560,12 @@ class WalletRpcClient(RpcClient):
 
     async def cancel_offer(self, trade_id: bytes32, fee=uint64(0), secure: bool = True):
         await self.fetch("cancel_offer", {"trade_id": trade_id.hex(), "secure": secure, "fee": fee})
+
+    # NFT wallet
+    async def create_new_nft_wallet(self, did_wallet_id):
+        request: Dict[str, Any] = {
+            "wallet_type": "nft_wallet",
+            "did_wallet_id": did_wallet_id,
+        }
+        response = await self.fetch("create_new_wallet", request)
+        return response
