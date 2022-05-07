@@ -243,7 +243,7 @@ async def test_nft_wallet_rpc_creation_and_list(two_wallet_nodes: Any, trusted: 
     assert len(uris) == 2
     assert b"https://chialisp.com/img/logo.svg" in uris
 
-    
+
 @pytest.mark.parametrize(
     "trusted",
     [True],
@@ -313,5 +313,12 @@ async def test_nft_offer(two_wallet_nodes: Any, trusted: Any) -> None:
     await asyncio.sleep(5)
     coins = nft_wallet_0.nft_wallet_info.my_nft_coins
     assert len(coins) == 1, "nft not generated"
-    nft_info = match_puzzle(coins[0].full_puzzle)
-
+    nft_coin: Coin = coins[0].coin
+    nft_full_puzzle: Program = coins[0].full_puzzle
+    nft_info: PuzzleInfo = match_puzzle(nft_full_puzzle)
+    nft_asset_id = create_asset_id(nft_info)
+    driver_dict: Dict[bytes32, PuzzleInfo] = {nft_asset_id: nft_info}
+    requested_payments_xch: Dict[Optional[bytes32], List[Payment]] = {nft_asset_id: [Payment(ph, 200, [b"memo"])]}
+    notarized_payments = Offer.notarize_payments(requested_payments_xch, [nft_coin])
+    announcements = Offer.calculate_announcements(notarized_payments, driver_dict)
+    # breakpoint()
