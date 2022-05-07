@@ -24,7 +24,7 @@ NFT_STATE_LAYER_MOD_HASH = NFT_STATE_LAYER_MOD.get_tree_hash()
 
 def match_metadata_layer_puzzle(puzzle: Program) -> Tuple[bool, Iterator[Program]]:
     matched, singleton_curried_args, nft_state_curried_args = match_nft_puzzle(puzzle)
-    return matched, singleton_curried_args
+    return matched, nft_state_curried_args
 
 
 def puzzle_for_metadata_layer(metadata: Program, updater_hash: bytes32, inner_puzzle: Program) -> Program:
