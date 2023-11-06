@@ -372,19 +372,20 @@ class WalletNode:
         # Delayed instantiation until here to avoid errors.
         #   got Future <Future pending> attached to a different loop
         self._new_peak_queue = NewPeakQueue(inner_queue=asyncio.PriorityQueue())
-        if not fingerprint:
-            fingerprint = self.get_last_used_fingerprint()
+        # if not fingerprint:
+        #     fingerprint = self.get_last_used_fingerprint()
         multiprocessing_start_method = process_config_start_method(config=self.config, log=self.log)
         multiprocessing_context = multiprocessing.get_context(method=multiprocessing_start_method)
         self._weight_proof_handler = WalletWeightProofHandler(self.constants, multiprocessing_context)
         self.synced_peers = set()
-        private_key = await self.get_private_key(fingerprint)
-        if private_key is None:
-            self.log_out()
-            return False
+        public_key = G1Element.from_bytes(bytes.fromhex(self.config["public_key"]))
+        # private_key = await self.get_private_key(fingerprint)
+        # if private_key is None:
+        #     self.log_out()
+        #     return False
         # override with private key fetched in case it's different from what was passed
         if fingerprint is None:
-            fingerprint = private_key.get_g1().get_fingerprint()
+            fingerprint = public_key.get_fingerprint()
         if self.config.get("enable_profiler", False):
             if sys.getprofile() is not None:
                 self.log.warning("not enabling profiler, getprofile() is already set")
@@ -400,7 +401,7 @@ class WalletNode:
             await self.reset_sync_db(path, fingerprint)
 
         self._wallet_state_manager = await WalletStateManager.create(
-            private_key,
+            public_key,
             self.config,
             path,
             self.constants,
@@ -420,7 +421,7 @@ class WalletNode:
         self._retry_failed_states_task = asyncio.create_task(self._retry_failed_states())
 
         self.sync_event = asyncio.Event()
-        self.log_in(private_key)
+        self.log_in(public_key)
         self.wallet_state_manager.state_changed("sync_changed")
 
         # Populate the balance caches for all wallets
@@ -620,8 +621,8 @@ class WalletNode:
                 if peer is not None:
                     await peer.close(9999)
 
-    def log_in(self, sk: PrivateKey) -> None:
-        self.logged_in_fingerprint = sk.get_g1().get_fingerprint()
+    def log_in(self, pk: G1Element) -> None:
+        self.logged_in_fingerprint = pk.get_fingerprint()
         self.logged_in = True
         self.log.info(f"Wallet is logged in using key with fingerprint: {self.logged_in_fingerprint}")
         try:
