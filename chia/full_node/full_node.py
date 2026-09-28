@@ -3125,6 +3125,7 @@ class FullNode:
             if self.simulator_transaction_callback is not None:  # callback
                 await self.simulator_transaction_callback(spend_name)
 
+            self._state_changed("new_tx", {"spend_name": spend_name, "mempool_item": mempool_item})
         else:
             self.mempool_manager.remove_seen(spend_name)
             self.log.debug(f"Wasn't able to add transaction with id {spend_name}, status {status} error: {error}")
