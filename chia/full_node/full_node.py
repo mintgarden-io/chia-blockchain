@@ -3191,6 +3191,17 @@ class FullNode:
         if total_removals == 0:
             return
 
+        self._state_changed(
+            "mempool_items_removed",
+            {
+                "removals": [
+                    {"transaction_id": transaction_id.hex(), "reason": removal_info.reason.name}
+                    for removal_info in mempool_removals
+                    for transaction_id in removal_info.items
+                ]
+            },
+        )
+
         start_time = time.monotonic()
 
         self.log.debug(f"Broadcasting {total_removals} removed transactions to peers")

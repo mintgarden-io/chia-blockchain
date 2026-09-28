@@ -6,6 +6,7 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from random import Random
+from typing import Any
 
 import pytest
 from chia_rs import AugSchemeMPL, Coin, CoinRecord, CoinSpend, CoinState, Program, SpendBundle
@@ -1199,6 +1200,44 @@ async def test_missing_capability_hint(mpu_setup_no_capability: Mpu) -> None:
     # Farm a block and there's still no mempool update
     await simulator.farm_blocks_to_puzzlehash(1)
     assert queue.empty()
+
+
+@pytest.mark.anyio
+async def test_mempool_state_changes_without_subscribed_peers(mpu_setup_no_capability: Mpu) -> None:
+    simulator, _, peer = mpu_setup_no_capability
+    full_node = simulator.full_node
+
+    state_changes: list[tuple[str, dict[str, Any] | None]] = []
+    original_callback = full_node.state_changed_callback
+
+    def record_state_change(change: str, change_data: dict[str, Any] | None = None) -> None:
+        state_changes.append((change, change_data))
+        if original_callback is not None:
+            original_callback(change, change_data)
+
+    full_node._set_state_changed_callback(record_state_change)
+
+    # Spending a coin emits new_tx with the mempool item, even with no wallet peer subscribed
+    coin, _ = await make_coin(full_node)
+    transaction_id = await spend_coin(simulator, peer, coin)
+    await simulator.wait_bundle_ids_in_mempool([transaction_id])
+
+    new_txs = [data for change, data in state_changes if change == "new_tx"]
+    assert len(new_txs) == 1
+    assert new_txs[0] is not None
+    assert new_txs[0]["spend_name"] == transaction_id
+    assert new_txs[0]["mempool_item"].name == transaction_id
+
+    # Including it in a block emits mempool_items_removed with the reason
+    await simulator.farm_blocks_to_puzzlehash(1)
+
+    removals = [
+        removal
+        for change, data in state_changes
+        if change == "mempool_items_removed" and data is not None
+        for removal in data["removals"]
+    ]
+    assert {"transaction_id": transaction_id.hex(), "reason": "BLOCK_INCLUSION"} in removals
 
 
 @pytest.mark.anyio

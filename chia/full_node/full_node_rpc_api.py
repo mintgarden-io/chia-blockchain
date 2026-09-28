@@ -168,8 +168,8 @@ class FullNodeRpcApi:
         if change == "unfinished_block":
             payloads.append(create_payload_dict(change, change_data, self.service_name, "unfinished_block_info"))
 
-        if change == "new_tx":
-            payloads.append(create_payload_dict("new_tx", change_data, self.service_name, "metrics"))
+        if change in {"new_tx", "mempool_items_removed"}:
+            payloads.append(create_payload_dict(change, change_data, self.service_name, "metrics"))
 
         return payloads
 
