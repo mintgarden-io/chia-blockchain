@@ -34,4 +34,6 @@ def obj_to_response(o: Any) -> web.Response:
     Converts a python object into json. Used for RPC server which returns JSON.
     """
     json_str = dict_to_json_str(o)
-    return web.Response(body=json_str, content_type="application/json")
+    response = web.Response(body=json_str, content_type="application/json")
+    response.enable_compression()
+    return response
